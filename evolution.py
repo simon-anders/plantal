@@ -11,7 +11,7 @@ from world import SimConfig, SimState, init_sim
 from network import Network, init_network, forward
 from routing import apply_budget_clip, route_signals
 from division import find_division_candidates, resolve_race_conditions, apply_divisions
-from scoring import score_plants
+from scoring import score_morphology
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ def step(
 def run_generation(
     network:  Network,
     cfg:      SimConfig,
-    score_fn: Callable[[Tensor, int], Tensor] = score_plants,
+    score_fn: Callable[[SimState, Network, SimConfig], Tensor] = score_morphology,
 ) -> tuple[Tensor, SimState]:
     """Run one generation (cfg.n_steps steps) and return scores and final state.
 
@@ -79,13 +79,13 @@ def run_generation(
     ----------
     network  : Network   (n_plants, ...)
     cfg      : SimConfig
-    score_fn : callable  fitness function ``score_fn(alive, l_world) -> scores``;
-               defaults to `score_plants`.
+    score_fn : callable  fitness function ``score_fn(state, network, cfg) -> scores``;
+               defaults to `score_morphology`.
 
     Returns
     -------
     (scores, final_state)
-      scores      : LongTensor (n_plants,)
+      scores      : Tensor (n_plants,)   (long for morphology, float if penalised)
       final_state : SimState
     """
     n_plants = network.weights.shape[0]
@@ -94,7 +94,7 @@ def run_generation(
     for _ in range(cfg.n_steps):
         state = step(state, network, cfg.thr_division, cfg.signal_max)
 
-    scores = score_fn(state.alive, cfg.l_world)
+    scores = score_fn(state, network, cfg)
     return scores, state
 
 
@@ -153,11 +153,13 @@ def default_callback(gen: int, scores: Tensor, state: SimState, network: Network
 
     Reproduces the old `verbose=True` output.
     """
+    # Integer format for count-based scores, float for penalised (float) scores.
+    fmt = "8.2f" if scores.is_floating_point() else "6d"
     print(
         f"Gen {gen+1:4d}  "
-        f"best={scores.max().item():6d}  "
+        f"best={scores.max().item():{fmt}}  "
         f"mean={scores.float().mean().item():7.1f}  "
-        f"median={scores.median().item():6d}"
+        f"median={scores.median().item():{fmt}}"
     )
 
 
@@ -207,7 +209,7 @@ def run_evolution(
     cfg:           SimConfig,
     n_generations: int,
     callback:      Callable[[int, Tensor, SimState, Network], None] | None = default_callback,
-    score_fn:      Callable[[Tensor, int], Tensor] = score_plants,
+    score_fn:      Callable[[SimState, Network, SimConfig], Tensor] = score_morphology,
 ) -> tuple[Network, list[Tensor]]:
     """Full evolutionary run.
 
@@ -226,8 +228,8 @@ def run_evolution(
         selection/reproduction).  Pass ``None`` to disable.
         Defaults to `default_callback`, which prints summary statistics.
     score_fn : callable
-        Fitness function ``score_fn(alive, l_world) -> scores``, evaluated on
-        the final state of each generation.  Defaults to `score_plants`.
+        Fitness function ``score_fn(state, network, cfg) -> scores``, evaluated
+        on the final state of each generation.  Defaults to `score_morphology`.
 
     Returns
     -------

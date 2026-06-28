@@ -6,9 +6,13 @@ Score = number of live cells that are:
   (b) reachable from the world border through empty cells.
 """
 
+from typing import Callable
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+
+from world import SimState, SimConfig
+from network import Network
 
 
 # 3x3 cross stencil (no corners) as a convolution kernel
@@ -136,3 +140,53 @@ def score_plants(
     scoring_cells = on_surface & seed_live   # (P, L, L)
 
     return scoring_cells.long().sum(dim=(-2, -1))   # (P,)
+
+
+# ---------------------------------------------------------------------------
+# score_fn-style scorers: signature (state, network, cfg) -> (n_plants,) scores
+# ---------------------------------------------------------------------------
+
+def score_morphology(
+    state:   SimState,
+    network: Network,
+    cfg:     SimConfig,
+) -> Tensor:
+    """Default fitness: the exposed-boundary morphology score.
+
+    Thin (state, network, cfg) wrapper around `score_plants` so the primitive
+    leaf function stays directly testable.
+    """
+    return score_plants(state.alive, cfg.l_world)
+
+
+def make_l1_penalised_score(
+    l1_coef: float,
+) -> Callable[[SimState, Network, SimConfig], Tensor]:
+    """Factory: fitness = morphology score - l1_coef * (per-plant L1 weight norm).
+
+    Encourages sparse networks.  The returned scorer prints the two score
+    components (morphology and penalty) to the console each time it is called
+    (a deliberate hack to surface the breakdown without a separate callback).
+
+    Parameters
+    ----------
+    l1_coef : float  penalty coefficient applied to the L1 norm of the weights.
+
+    Returns
+    -------
+    score_fn(state, network, cfg) -> FloatTensor (n_plants,)
+    """
+    def score_fn(state: SimState, network: Network, cfg: SimConfig) -> Tensor:
+        morph = score_plants(state.alive, cfg.l_world).float()   # (P,)
+        # Per-plant L1 norm over all weight dims except the plant dim.
+        l1      = network.weights.abs().sum(dim=tuple(range(1, network.weights.dim())))
+        penalty = l1_coef * l1                                    # (P,)
+
+        print(
+            f"  morph:   best={morph.max().item():6.1f}  mean={morph.mean().item():7.1f}   "
+            f"L1 penalty: mean={penalty.mean().item():7.2f}  (coef={l1_coef:g})"
+        )
+
+        return morph - penalty
+
+    return score_fn
