@@ -3,6 +3,7 @@ Evolution loop: step execution, generation runner, and evolutionary selection.
 """
 
 import math
+from typing import Callable
 import torch
 from torch import Tensor
 
@@ -154,6 +155,61 @@ def select_and_reproduce(
 # Outer evolution loop
 # ---------------------------------------------------------------------------
 
+def default_callback(gen: int, scores: Tensor, state: SimState, network: Network) -> None:
+    """Default per-generation callback: print summary statistics.
+
+    Reproduces the old `verbose=True` output.
+    """
+    print(
+        f"Gen {gen+1:4d}  "
+        f"best={scores.max().item():6d}  "
+        f"mean={scores.float().mean().item():7.1f}  "
+        f"median={scores.median().item():6d}"
+    )
+
+
+def make_alive_viewer(
+    cmap:  str = "Greens",
+    pause: float = 0.001,
+):
+    """Open a matplotlib window and return a per-generation callback that
+    displays the final alive matrix of the top-scoring plant, updating the
+    same window in place each generation.
+
+    The returned closure also calls `default_callback` at the end, so the
+    text summary is printed alongside the graphical update.
+
+    Parameters
+    ----------
+    cmap  : str    matplotlib colormap for the alive bitmap
+    pause : float  seconds passed to plt.pause to let the GUI redraw
+
+    Returns
+    -------
+    callback(gen, scores, state, network) -> None
+    """
+    import matplotlib.pyplot as plt
+
+    plt.ion()
+    fig, ax = plt.subplots()
+    im = ax.imshow([[0]], cmap=cmap, vmin=0, vmax=1, interpolation="nearest")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    fig.show()
+
+    def callback(gen: int, scores: Tensor, state: SimState, network: Network) -> None:
+        best = int(scores.argmax())
+        im.set_data(state.alive[best].cpu().numpy())
+        ax.set_title(f"Gen {gen+1}  plant {best}  score {int(scores[best])}")
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+        plt.pause(pause)
+
+        default_callback(gen, scores, state, network)
+
+    return callback
+
+
 def run_evolution(
     n_generations: int,
     n_plants:      int,
@@ -165,9 +221,19 @@ def run_evolution(
     signal_max:    float,
     sd_mut:        float,
     device:        torch.device = torch.device("cpu"),
-    verbose:       bool = True,
+    callback:      Callable[[int, Tensor, SimState, Network], None] | None = default_callback,
 ) -> tuple[Network, list[Tensor]]:
     """Full evolutionary run.
+
+    Parameters
+    ----------
+    callback : callable or None
+        Called once per generation as ``callback(gen, scores, state, network)``,
+        where ``gen`` is the zero-based generation index, ``scores`` is the
+        generation's score tensor, ``state`` is the final SimState, and
+        ``network`` is the network that produced them (before
+        selection/reproduction).  Pass ``None`` to disable.
+        Defaults to `default_callback`, which prints summary statistics.
 
     Returns
     -------
@@ -183,18 +249,13 @@ def run_evolution(
     score_history = []
 
     for gen in range(n_generations):
-        scores, _ = run_generation(
+        scores, state = run_generation(
             network, n_steps, l_world, n_signal, thr_division, signal_max, device
         )
         score_history.append(scores.clone())
 
-        if verbose:
-            print(
-                f"Gen {gen+1:4d}  "
-                f"best={scores.max().item():6d}  "
-                f"mean={scores.float().mean().item():7.1f}  "
-                f"median={scores.median().item():6d}"
-            )
+        if callback is not None:
+            callback(gen, scores, state, network)
 
         network = select_and_reproduce(network, scores, sd_mut)
 
