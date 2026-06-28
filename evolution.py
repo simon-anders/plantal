@@ -69,15 +69,18 @@ def step(
 # ---------------------------------------------------------------------------
 
 def run_generation(
-    network: Network,
-    cfg:     SimConfig,
+    network:  Network,
+    cfg:      SimConfig,
+    score_fn: Callable[[Tensor, int], Tensor] = score_plants,
 ) -> tuple[Tensor, SimState]:
     """Run one generation (cfg.n_steps steps) and return scores and final state.
 
     Parameters
     ----------
-    network : Network   (n_plants, ...)
-    cfg     : SimConfig
+    network  : Network   (n_plants, ...)
+    cfg      : SimConfig
+    score_fn : callable  fitness function ``score_fn(alive, l_world) -> scores``;
+               defaults to `score_plants`.
 
     Returns
     -------
@@ -91,7 +94,7 @@ def run_generation(
     for _ in range(cfg.n_steps):
         state = step(state, network, cfg.thr_division, cfg.signal_max)
 
-    scores = score_plants(state.alive, cfg.l_world)
+    scores = score_fn(state.alive, cfg.l_world)
     return scores, state
 
 
@@ -204,6 +207,7 @@ def run_evolution(
     cfg:           SimConfig,
     n_generations: int,
     callback:      Callable[[int, Tensor, SimState, Network], None] | None = default_callback,
+    score_fn:      Callable[[Tensor, int], Tensor] = score_plants,
 ) -> tuple[Network, list[Tensor]]:
     """Full evolutionary run.
 
@@ -221,6 +225,9 @@ def run_evolution(
         ``network`` is the network that produced them (before
         selection/reproduction).  Pass ``None`` to disable.
         Defaults to `default_callback`, which prints summary statistics.
+    score_fn : callable
+        Fitness function ``score_fn(alive, l_world) -> scores``, evaluated on
+        the final state of each generation.  Defaults to `score_plants`.
 
     Returns
     -------
@@ -232,7 +239,7 @@ def run_evolution(
     score_history = []
 
     for gen in range(n_generations):
-        scores, state = run_generation(network, cfg)
+        scores, state = run_generation(network, cfg, score_fn)
         score_history.append(scores.clone())
 
         if callback is not None:
