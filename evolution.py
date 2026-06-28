@@ -7,7 +7,7 @@ from typing import Callable
 import torch
 from torch import Tensor
 
-from world import SimState, init_sim
+from world import SimConfig, SimState, init_sim
 from network import Network, init_network, forward
 from routing import apply_budget_clip, route_signals
 from division import find_division_candidates, resolve_race_conditions, apply_divisions
@@ -69,25 +69,15 @@ def step(
 # ---------------------------------------------------------------------------
 
 def run_generation(
-    network:      Network,
-    n_steps:      int,
-    l_world:      int,
-    n_signal:     int,
-    thr_division: float,
-    signal_max:   float,
-    device:       torch.device,
+    network: Network,
+    cfg:     SimConfig,
 ) -> tuple[Tensor, SimState]:
-    """Run one generation (n_steps steps) and return scores and final state.
+    """Run one generation (cfg.n_steps steps) and return scores and final state.
 
     Parameters
     ----------
-    network      : Network   (n_plants, ...)
-    n_steps      : int
-    l_world      : int
-    n_signal     : int
-    thr_division : float
-    signal_max   : float
-    device       : torch.device
+    network : Network   (n_plants, ...)
+    cfg     : SimConfig
 
     Returns
     -------
@@ -96,12 +86,12 @@ def run_generation(
       final_state : SimState
     """
     n_plants = network.weights.shape[0]
-    state = init_sim(n_plants, l_world, n_signal, device)
+    state = init_sim(n_plants, cfg.l_world, cfg.n_signal, cfg.device)
 
-    for _ in range(n_steps):
-        state = step(state, network, thr_division, signal_max)
+    for _ in range(cfg.n_steps):
+        state = step(state, network, cfg.thr_division, cfg.signal_max)
 
-    scores = score_plants(state.alive, l_world)
+    scores = score_plants(state.alive, cfg.l_world)
     return scores, state
 
 
@@ -112,7 +102,7 @@ def run_generation(
 def select_and_reproduce(
     network: Network,
     scores:  Tensor,
-    sd_mut:  float,
+    cfg:     SimConfig,
 ) -> Network:
     """Keep top half of plants (by score) and replace the bottom half with
     mutated copies.  The top half is preserved exactly (elitism).
@@ -121,7 +111,7 @@ def select_and_reproduce(
     ----------
     network : Network  (n_plants, ...)
     scores  : LongTensor (n_plants,)
-    sd_mut  : float     std of additive Gaussian mutation noise
+    cfg     : SimConfig  (uses cfg.sd_mut for mutation noise)
 
     Returns
     -------
@@ -142,8 +132,8 @@ def select_and_reproduce(
     # The second n_keep rows get mutation noise added
     n_mutated = n_plants - n_keep
 
-    noise_w = torch.randn_like(new_weights[n_keep:]) * sd_mut
-    noise_b = torch.randn_like(new_biases[n_keep:])  * sd_mut
+    noise_w = torch.randn_like(new_weights[n_keep:]) * cfg.sd_mut
+    noise_b = torch.randn_like(new_biases[n_keep:])  * cfg.sd_mut
 
     new_weights[n_keep:] = new_weights[n_keep:] + noise_w
     new_biases[n_keep:]  = new_biases[n_keep:]  + noise_b
@@ -211,22 +201,19 @@ def make_alive_viewer(
 
 
 def run_evolution(
+    cfg:           SimConfig,
     n_generations: int,
-    n_plants:      int,
-    l_world:       int,
-    n_signal:      int,
-    n_layers:      int,
-    n_steps:       int,
-    thr_division:  float,
-    signal_max:    float,
-    sd_mut:        float,
-    device:        torch.device = torch.device("cpu"),
     callback:      Callable[[int, Tensor, SimState, Network], None] | None = default_callback,
 ) -> tuple[Network, list[Tensor]]:
     """Full evolutionary run.
 
     Parameters
     ----------
+    cfg : SimConfig
+        Simulation and evolution hyperparameters.  (Validation of l_world and
+        n_signal happens at SimConfig construction.)
+    n_generations : int
+        Number of generations to run.
     callback : callable or None
         Called once per generation as ``callback(gen, scores, state, network)``,
         where ``gen`` is the zero-based generation index, ``scores`` is the
@@ -241,22 +228,16 @@ def run_evolution(
       final_network  : Network after the last selection step
       score_history  : list of LongTensor (n_plants,), one per generation
     """
-    assert l_world >= 2 * n_steps + 1, (
-        f"l_world={l_world} is too small; need >= {2 * n_steps + 1}"
-    )
-
-    network = init_network(n_plants, n_layers, n_signal, device)
+    network = init_network(cfg.n_plants, cfg.n_layers, cfg.n_signal, cfg.device)
     score_history = []
 
     for gen in range(n_generations):
-        scores, state = run_generation(
-            network, n_steps, l_world, n_signal, thr_division, signal_max, device
-        )
+        scores, state = run_generation(network, cfg)
         score_history.append(scores.clone())
 
         if callback is not None:
             callback(gen, scores, state, network)
 
-        network = select_and_reproduce(network, scores, sd_mut)
+        network = select_and_reproduce(network, scores, cfg)
 
     return network, score_history

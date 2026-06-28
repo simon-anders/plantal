@@ -14,7 +14,7 @@ from constants import (
     NORTH, SOUTH, WEST, EAST,
     REL_TO_ABS, ABS_TO_REL, NEGATE_DIR, DIR_TO_DELTA,
 )
-from world import init_sim
+from world import SimConfig, init_sim
 from network import init_network, forward, Network
 from routing import apply_budget_clip, route_signals
 from division import find_division_candidates, resolve_race_conditions, apply_divisions
@@ -491,7 +491,8 @@ def test_evolution_elitism():
         # Assign scores: plants 0,1,2 are best
         scores = torch.tensor([10, 9, 8, 1, 1, 1], dtype=torch.long)
 
-        new_net = select_and_reproduce(net, scores, sd_mut=0.1)
+        new_net = select_and_reproduce(net, scores, SimConfig(
+            n_plants=n_plants, n_layers=n_layers, n_signal=n_signal, sd_mut=0.1))
 
         # Top 3 plants (plants 0,1,2 by score rank) should appear unchanged
         # in the first 3 rows of the new network
