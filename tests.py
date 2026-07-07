@@ -18,7 +18,10 @@ from world import SimConfig, init_sim
 from network import init_network, forward, Network
 from routing import apply_budget_clip, route_signals
 from division import find_division_candidates, resolve_race_conditions, apply_divisions
-from scoring import flood_fill_empty, flood_fill_live, score_plants, score_boundary_sides
+from scoring import (
+    flood_fill_empty, flood_fill_live, score_plants, score_boundary_sides,
+    make_size_penalised_score,
+)
 from evolution import select_and_reproduce, step
 
 
@@ -480,6 +483,55 @@ def test_scoring_boundary_sides():
 
 
 # ---------------------------------------------------------------------------
+# 11c. Scoring: cell_penalty subtracts alive-cell count
+# ---------------------------------------------------------------------------
+
+def test_scoring_cell_penalty():
+    name = "scoring_cell_penalty"
+    try:
+        l_world = 7
+        cx = 3
+        alive = torch.zeros(1, l_world, l_world, dtype=torch.bool)
+        alive[0, cx, cx]   = True
+        alive[0, cx, cx+1] = True   # 2 alive cells
+
+        # score_plants: base 2 surface cells, 2 alive cells.
+        assert score_plants(alive, l_world)[0].item() == 2
+        assert abs(score_plants(alive, l_world, cell_penalty=1.0)[0].item() - 0.0) < 1e-6, \
+            "penalty 1.0 should give 2 - 2 = 0"
+        assert abs(score_plants(alive, l_world, cell_penalty=0.5)[0].item() - 1.0) < 1e-6, \
+            "penalty 0.5 should give 2 - 1 = 1"
+
+        # score_boundary_sides: base 6 sides, 2 alive cells.
+        assert score_boundary_sides(alive, l_world)[0].item() == 6
+        assert abs(score_boundary_sides(alive, l_world, cell_penalty=1.0)[0].item() - 4.0) < 1e-6, \
+            "penalty 1.0 should give 6 - 2 = 4"
+
+        # Detached fragment is penalised (counts as alive) but not rewarded:
+        # base stays 4 (single seed sides), alive count is 2 -> 4 - 2 = 2.
+        alive2 = torch.zeros(1, l_world, l_world, dtype=torch.bool)
+        alive2[0, cx, cx] = True   # seed
+        alive2[0, 1, 1]   = True   # detached
+        assert score_boundary_sides(alive2, l_world)[0].item() == 4
+        assert abs(score_boundary_sides(alive2, l_world, cell_penalty=1.0)[0].item() - 2.0) < 1e-6, \
+            "fragment should be penalised: 4 - 2 = 2"
+
+        # Default (cell_penalty=0) must preserve the integer dtype.
+        assert score_plants(alive, l_world).dtype == torch.long, "default should stay long"
+
+        # Factory bakes the penalty into a (alive, l_world) callable.
+        fn = make_size_penalised_score(score_boundary_sides, cell_penalty=1.0)
+        assert abs(fn(alive, l_world)[0].item() - 4.0) < 1e-6, \
+            "factory should apply penalty: 6 - 2 = 4"
+        # Default factory wraps score_plants with no penalty.
+        assert make_size_penalised_score()(alive, l_world)[0].item() == 2
+
+        _pass(name)
+    except AssertionError as e:
+        _fail(name, str(e))
+
+
+# ---------------------------------------------------------------------------
 # 12. Forward pass: shape
 # ---------------------------------------------------------------------------
 
@@ -604,6 +656,7 @@ if __name__ == "__main__":
         test_flood_fill_live,
         test_scoring_end_to_end,
         test_scoring_boundary_sides,
+        test_scoring_cell_penalty,
         test_forward_pass_shape,
         test_forward_pass_nonneg,
         test_evolution_elitism,

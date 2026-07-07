@@ -6,6 +6,8 @@ Score = number of live cells that are:
   (b) reachable from the world border through empty cells.
 """
 
+from typing import Callable
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -104,8 +106,9 @@ def flood_fill_live(
 
 
 def score_plants(
-    alive:   Tensor,   # (n_plants, l_world, l_world) bool
-    l_world: int,
+    alive:        Tensor,   # (n_plants, l_world, l_world) bool
+    l_world:      int,
+    cell_penalty: float = 0.0,
 ) -> Tensor:
     """Compute the score for each plant.
 
@@ -117,9 +120,13 @@ def score_plants(
     a cell in the flood_fill_empty set.  We check this by dilating the empty
     fill by one step and intersecting with alive.)
 
+    If ``cell_penalty`` > 0, ``cell_penalty * (number of alive cells)`` is
+    subtracted from the score (all alive cells count, not just seed-connected
+    ones, so detached fragments are penalised but not rewarded).
+
     Returns
     -------
-    LongTensor (n_plants,)
+    LongTensor (n_plants,) if cell_penalty == 0, else FloatTensor (n_plants,).
     """
     device = alive.device
 
@@ -135,12 +142,26 @@ def score_plants(
 
     scoring_cells = on_surface & seed_live   # (P, L, L)
 
-    return scoring_cells.long().sum(dim=(-2, -1))   # (P,)
+    base = scoring_cells.long().sum(dim=(-2, -1))   # (P,)
+    return _apply_cell_penalty(base, alive, cell_penalty)
+
+
+def _apply_cell_penalty(base: Tensor, alive: Tensor, cell_penalty: float) -> Tensor:
+    """Subtract cell_penalty * (number of alive cells) from ``base``.
+
+    Returns ``base`` unchanged (integer) when cell_penalty == 0, otherwise a
+    float tensor.
+    """
+    if cell_penalty == 0.0:
+        return base
+    n_alive = alive.sum(dim=(-2, -1))   # (P,)
+    return base.float() - cell_penalty * n_alive.float()
 
 
 def score_boundary_sides(
-    alive:   Tensor,   # (n_plants, l_world, l_world) bool
-    l_world: int,
+    alive:        Tensor,   # (n_plants, l_world, l_world) bool
+    l_world:      int,
+    cell_penalty: float = 0.0,
 ) -> Tensor:
     """Score = number of exposed boundary *sides* (edges), not surface cells.
 
@@ -151,9 +172,13 @@ def score_boundary_sides(
     contribute 1 (total 2).  This rewards total exposed perimeter length rather
     than the number of surface cells (cf. `score_plants`).
 
+    If ``cell_penalty`` > 0, ``cell_penalty * (number of alive cells)`` is
+    subtracted from the score (all alive cells count, not just seed-connected
+    ones, so detached fragments are penalised but not rewarded).
+
     Returns
     -------
-    LongTensor (n_plants,)
+    LongTensor (n_plants,) if cell_penalty == 0, else FloatTensor (n_plants,).
     """
     device = alive.device
 
@@ -169,4 +194,30 @@ def score_boundary_sides(
     # Keep only sides belonging to seed-connected live cells, then sum.
     scoring_sides = side_count * seed_live.float()   # (P, L, L)
 
-    return scoring_sides.sum(dim=(-2, -1)).long()   # (P,)
+    base = scoring_sides.sum(dim=(-2, -1)).long()   # (P,)
+    return _apply_cell_penalty(base, alive, cell_penalty)
+
+
+def make_size_penalised_score(
+    base_score_fn: Callable[..., Tensor] = score_plants,
+    cell_penalty:  float = 0.0,
+) -> Callable[[Tensor, int], Tensor]:
+    """Build a ``score_fn(alive, l_world)`` with a size penalty baked in.
+
+    Wraps a base scorer (``score_plants`` or ``score_boundary_sides``, or any
+    scorer accepting a ``cell_penalty`` keyword) so it can be passed directly as
+    ``run_evolution(..., score_fn=make_size_penalised_score(...))``.
+
+    Parameters
+    ----------
+    base_score_fn : scorer taking ``(alive, l_world, cell_penalty=...)``.
+    cell_penalty  : coefficient subtracted per alive cell (see the base scorer).
+
+    Returns
+    -------
+    A callable ``(alive, l_world) -> Tensor``.
+    """
+    def score_fn(alive: Tensor, l_world: int) -> Tensor:
+        return base_score_fn(alive, l_world, cell_penalty=cell_penalty)
+
+    return score_fn

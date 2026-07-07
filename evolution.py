@@ -153,11 +153,13 @@ def default_callback(gen: int, scores: Tensor, state: SimState, network: Network
 
     Reproduces the old `verbose=True` output.
     """
+    # Scores may be integer (default scorers) or float (e.g. with a size
+    # penalty), so format numerically rather than with an integer code.
     print(
         f"Gen {gen+1:4d}  "
-        f"best={scores.max().item():6d}  "
-        f"mean={scores.float().mean().item():7.1f}  "
-        f"median={scores.median().item():6d}"
+        f"best={scores.max().item():8.2f}  "
+        f"mean={scores.float().mean().item():8.2f}  "
+        f"median={scores.float().median().item():8.2f}"
     )
 
 
