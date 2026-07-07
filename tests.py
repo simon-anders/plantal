@@ -18,7 +18,7 @@ from world import SimConfig, init_sim
 from network import init_network, forward, Network
 from routing import apply_budget_clip, route_signals
 from division import find_division_candidates, resolve_race_conditions, apply_divisions
-from scoring import flood_fill_empty, flood_fill_live, score_plants
+from scoring import flood_fill_empty, flood_fill_live, score_plants, score_boundary_sides
 from evolution import select_and_reproduce, step
 
 
@@ -441,6 +441,45 @@ def test_scoring_end_to_end():
 
 
 # ---------------------------------------------------------------------------
+# 11b. Scoring: boundary sides (edges) rather than surface cells
+# ---------------------------------------------------------------------------
+
+def test_scoring_boundary_sides():
+    name = "scoring_boundary_sides"
+    try:
+        # 7x7 world, seed at (3,3); tiny plant so every empty cell reaches the
+        # border.  Two live cells at (3,3) and (3,4).
+        #   (3,3) neighbours: (2,3),(4,3),(3,2) empty + (3,4) live  -> 3 sides
+        #   (3,4) neighbours: (2,4),(4,4),(3,5) empty + (3,3) live  -> 3 sides
+        # Total exposed boundary sides = 6 (vs 2 surface cells for score_plants).
+        l_world = 7
+        cx = 3
+        alive = torch.zeros(1, l_world, l_world, dtype=torch.bool)
+        alive[0, cx, cx]   = True
+        alive[0, cx, cx+1] = True
+
+        scores = score_boundary_sides(alive, l_world)
+        assert scores[0].item() == 6, f"Expected 6 sides, got {scores[0].item()}"
+
+        # A single isolated seed has all 4 sides exposed.
+        alive2 = torch.zeros(1, l_world, l_world, dtype=torch.bool)
+        alive2[0, cx, cx] = True
+        scores2 = score_boundary_sides(alive2, l_world)
+        assert scores2[0].item() == 4, f"Single seed: expected 4 sides, got {scores2[0].item()}"
+
+        # A disconnected fragment must not contribute (seed-connectivity kept).
+        alive3 = torch.zeros(1, l_world, l_world, dtype=torch.bool)
+        alive3[0, cx, cx] = True   # seed: 4 sides
+        alive3[0, 1, 1]   = True   # detached fragment: should be ignored
+        scores3 = score_boundary_sides(alive3, l_world)
+        assert scores3[0].item() == 4, f"Fragment ignored: expected 4, got {scores3[0].item()}"
+
+        _pass(name)
+    except AssertionError as e:
+        _fail(name, str(e))
+
+
+# ---------------------------------------------------------------------------
 # 12. Forward pass: shape
 # ---------------------------------------------------------------------------
 
@@ -564,6 +603,7 @@ if __name__ == "__main__":
         test_flood_fill_empty,
         test_flood_fill_live,
         test_scoring_end_to_end,
+        test_scoring_boundary_sides,
         test_forward_pass_shape,
         test_forward_pass_nonneg,
         test_evolution_elitism,

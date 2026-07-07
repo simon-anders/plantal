@@ -136,3 +136,37 @@ def score_plants(
     scoring_cells = on_surface & seed_live   # (P, L, L)
 
     return scoring_cells.long().sum(dim=(-2, -1))   # (P,)
+
+
+def score_boundary_sides(
+    alive:   Tensor,   # (n_plants, l_world, l_world) bool
+    l_world: int,
+) -> Tensor:
+    """Score = number of exposed boundary *sides* (edges), not surface cells.
+
+    For each live cell in the seed-connected component, count how many of its
+    four neighbours are empty cells reachable from the world border, and sum
+    over all such cells.  A live cell adjacent to two border-reachable empty
+    cells contributes 2; two live cells adjacent to the same empty cell each
+    contribute 1 (total 2).  This rewards total exposed perimeter length rather
+    than the number of surface cells (cf. `score_plants`).
+
+    Returns
+    -------
+    LongTensor (n_plants,)
+    """
+    device = alive.device
+
+    border_empty = flood_fill_empty(alive, l_world)   # (P, L, L) bool
+    seed_live    = flood_fill_live(alive, l_world)     # (P, L, L) bool
+
+    # Count border-reachable empty 4-neighbours of every cell.  _CROSS includes
+    # the centre, but a live cell is never itself in border_empty (it is not
+    # empty), so the centre term contributes 0 at every scoring cell.
+    cross = _CROSS.to(device)
+    side_count = F.conv2d(border_empty.float().unsqueeze(1), cross, padding=1).squeeze(1)
+
+    # Keep only sides belonging to seed-connected live cells, then sum.
+    scoring_sides = side_count * seed_live.float()   # (P, L, L)
+
+    return scoring_sides.sum(dim=(-2, -1)).long()   # (P,)
